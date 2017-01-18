@@ -165,25 +165,20 @@ class SpiFlashSingle(Module, AutoCSR):
             self.miso = CSRStatus()
             self.bitbang_en = CSRStorage()
 
-        ###
+        # # #
 
         cs_n = Signal(reset=1)
         clk = Signal()
         dq_oe = Signal()
         wbone_width = len(bus.dat_r)
 
-
-        read_cmd_params = {
-            4: (_format_cmd(_QIOFR, 4), 4*8),
-            2: (_format_cmd(_DIOFR, 2), 2*8),
-            1: (_format_cmd(_FAST_READ, 1), 1*8)
-        }
-        read_cmd, cmd_width = read_cmd_params[spi_width]
+        read_cmd = _FAST_READ
+        cmd_width = 8
         addr_width = 24
 
         pads.cs_n.reset = 1
 
-        dq = TSTriple(spi_width)
+        dq = TSTriple(1)
         self.specials.dq = dq.get_tristate(pads.dq)
 
         sr = Signal(max(cmd_width, addr_width, wbone_width))
@@ -193,16 +188,15 @@ class SpiFlashSingle(Module, AutoCSR):
         hw_read_logic = [
             pads.clk.eq(clk),
             pads.cs_n.eq(cs_n),
-            dq.o.eq(sr[-spi_width:]),
+            dq.o.eq(sr[-1:]),
             dq.oe.eq(dq_oe)
         ]
 
         if with_bitbang:
-            dqs = Replicate(1, spi_width-1)
             bitbang_logic = [
                 pads.clk.eq(self.bitbang.storage[1]),
                 pads.cs_n.eq(self.bitbang.storage[2]),
-                dq.o.eq(Cat(self.bitbang.storage[0], dqs)),
+                dq.o.eq(Cat(self.bitbang.storage[0])),
                 If(self.bitbang.storage[3],
                     dq.oe.eq(0)
                 ).Else(
@@ -225,52 +219,31 @@ class SpiFlashSingle(Module, AutoCSR):
         if div < 2:
             raise ValueError("Unsupported value \'{}\' for div parameter for SpiFlash core".format(div))
         else:
-            if spi_width == 1:
-                i = Signal(max=div)
-                dqi = Signal(spi_width)
-#                self.comb += [
-#                     dqi.eq(pads.miso),
-#                ]
-                self.sync += [
-                    If(i == div//2 - 1,
-                        clk.eq(1),
-                        #dqi.eq(dq.i),
-                        dqi.eq(pads.miso),
-                    ),
-                    If(i == div - 1,
-                        i.eq(0),
-                        clk.eq(0),
-                        sr.eq(Cat(dqi, sr[:-spi_width]))
-                    ).Else(
-                        i.eq(i + 1),
-                    ),
-                ]
-            else:
-                i = Signal(max=div)
-                dqi = Signal(spi_width)
-                self.sync += [
-                    If(i == div//2 - 1,
-                        clk.eq(1),
-                        dqi.eq(dq.i),
-                    ),
-                    If(i == div - 1,
-                        i.eq(0),
-                        clk.eq(0),
-                        sr.eq(Cat(dqi, sr[:-spi_width]))
-                    ).Else(
-                        i.eq(i + 1),
-                    ),
-                ]
+            i = Signal(max=div)
+            dqi = Signal()
+            self.sync += [
+                If(i == div//2 - 1,
+                    clk.eq(1),
+                    dqi.eq(pads.miso),
+                ),
+                If(i == div - 1,
+                    i.eq(0),
+                    clk.eq(0),
+                    sr.eq(Cat(dqi, sr[:-1]))
+                ).Else(
+                    i.eq(i + 1),
+                )
+            ]
 
         # spi is byte-addressed, prefix by zeros
         z = Replicate(0, log2_int(wbone_width//8))
 
         seq = [
-            (cmd_width//spi_width*div,
+            (cmd_width//div,
                 [dq_oe.eq(1), cs_n.eq(0), sr[-cmd_width:].eq(read_cmd)]),
-            (addr_width//spi_width*div,
+            (addr_width//div,
                 [sr[-addr_width:].eq(Cat(z, bus.adr))]),
-            ((dummy + wbone_width//spi_width)*div,
+            ((dummy + wbone_width//div,
                 [dq_oe.eq(0)]),
             (1,
                 [bus.ack.eq(1), cs_n.eq(1)]),
