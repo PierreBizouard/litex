@@ -159,7 +159,6 @@ class SpiFlashSingle(Module, AutoCSR):
         Optionally supports software bitbanging (for write, erase, or other commands).
         """
         self.bus = bus = wishbone.Interface()
-        spi_width = len(pads.dq)
         if with_bitbang:
             self.bitbang = CSRStorage(4)
             self.miso = CSRStatus()
@@ -169,7 +168,6 @@ class SpiFlashSingle(Module, AutoCSR):
 
         cs_n = Signal(reset=1)
         clk = Signal()
-        dq_oe = Signal()
         wbone_width = len(bus.dat_r)
 
         read_cmd = _FAST_READ
@@ -178,9 +176,6 @@ class SpiFlashSingle(Module, AutoCSR):
 
         pads.cs_n.reset = 1
 
-        dq = TSTriple(1)
-        self.specials.dq = dq.get_tristate(pads.dq)
-
         sr = Signal(max(cmd_width, addr_width, wbone_width))
 
         self.comb += bus.dat_r.eq(sr)
@@ -188,22 +183,16 @@ class SpiFlashSingle(Module, AutoCSR):
         hw_read_logic = [
             pads.clk.eq(clk),
             pads.cs_n.eq(cs_n),
-            dq.o.eq(sr[-1:]),
-            dq.oe.eq(dq_oe)
+            pads.mosi.eq(sr[-1:])
         ]
 
         if with_bitbang:
             bitbang_logic = [
                 pads.clk.eq(self.bitbang.storage[1]),
                 pads.cs_n.eq(self.bitbang.storage[2]),
-                dq.o.eq(Cat(self.bitbang.storage[0])),
-                If(self.bitbang.storage[3],
-                    dq.oe.eq(0)
-                ).Else(
-                    dq.oe.eq(1)
-                ),
+                pads.mosi.eq(Cat(self.bitbang.storage[0])),
                 If(self.bitbang.storage[1],
-                    self.miso.status.eq(dq.i[1])
+                    self.miso.status.eq(pads.miso)
                 )
             ]
 
@@ -220,16 +209,16 @@ class SpiFlashSingle(Module, AutoCSR):
             raise ValueError("Unsupported value \'{}\' for div parameter for SpiFlash core".format(div))
         else:
             i = Signal(max=div)
-            dqi = Signal()
+            miso = Signal()
             self.sync += [
                 If(i == div//2 - 1,
                     clk.eq(1),
-                    dqi.eq(pads.miso),
+                    miso.eq(pads.miso),
                 ),
                 If(i == div - 1,
                     i.eq(0),
                     clk.eq(0),
-                    sr.eq(Cat(dqi, sr[:-1]))
+                    sr.eq(Cat(miso, sr[:-1]))
                 ).Else(
                     i.eq(i + 1),
                 )
@@ -240,11 +229,11 @@ class SpiFlashSingle(Module, AutoCSR):
 
         seq = [
             (cmd_width//div,
-                [dq_oe.eq(1), cs_n.eq(0), sr[-cmd_width:].eq(read_cmd)]),
+                [cs_n.eq(0), sr[-cmd_width:].eq(read_cmd)]),
             (addr_width//div,
                 [sr[-addr_width:].eq(Cat(z, bus.adr))]),
-            ((dummy + wbone_width//div,
-                [dq_oe.eq(0)]),
+            (dummy + wbone_width//div,
+                []),
             (1,
                 [bus.ack.eq(1), cs_n.eq(1)]),
             (div, # tSHSL!
